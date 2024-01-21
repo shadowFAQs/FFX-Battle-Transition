@@ -3,7 +3,7 @@ import os
 import numpy as np
 import pygame as pg
 from pygame import gfxdraw
-from scipy.spatial import ConvexHull, Voronoi
+from scipy.spatial import Voronoi
 
 
 class Transition():
@@ -23,21 +23,13 @@ class Transition():
         if not self.frame_counter:
             self.frame_counter = 1
 
-    def create_vertices(self):
+    def create_shards(self):
         # Generate random 2D points
         points = np.random.rand(self.num_vertices, 2) * 512
-        edge_points = np.array([[0, 0], [0, 512], [512, 0], [512, 512]])
+        edge_points = np.array([[-128, -128], [-128, 768], [768, -128], [768, 768]])
         points = np.append(points, edge_points, axis=0)
 
         # Compute Voronoi tesselation
-        vor = Voronoi(points)
-
-        # Calculate the convex hull of the points
-        hull = ConvexHull(points)
-        for vertex in hull.vertices:
-            points = np.append(points, [points[vertex]], axis=0)
-
-        # Recalculate the Voronoi diagram
         vor = Voronoi(points)
 
         # Print the coordinates of each vertex
@@ -76,7 +68,7 @@ class Transition():
 
     def shatter(self):
         print('shatter')
-        self.create_vertices()
+        self.create_shards()
 
     def stop_expansion(self):
         print('stop_expansion')
