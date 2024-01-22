@@ -6,17 +6,45 @@ import pygame as pg
 from pygame import gfxdraw
 from scipy.spatial import Voronoi
 from shapely.geometry import Polygon
-from shapely.affinity import scale
+from shapely.affinity import rotate, scale
+
+from colorized_voronoi import voronoi_finite_polygons_2d  # Source: gist.github.com/pv/8036995
+
+
+class Shard():
+    def __init__(self, polygon: Polygon):
+        self.poly = polygon
+
+        self.image_offset = pg.Vector2(0, 0)
+        self.rotation = np.random.rand() - 0.5
+
+    def get_int_coords(self) -> tuple[int]:
+        return int(self.image_offset.x), -int(self.image_offset.y)
+
+    def move(self, delta: pg.Vector2):
+        self.image_offset += delta
+
+        new_coords = []
+        for x, y in self.poly.exterior.coords:
+            new_coords.append(pg.Vector2(x, y) + delta)
+
+        self.poly = Polygon(new_coords)
+
+    def rotate(self):
+        self.rotation = piecewise_floor(v=self.rotation, operand=0.9, threshold=0.1)
+        self.poly = rotate(self.poly, self.rotation, origin=self.poly.centroid)
 
 
 class Transition():
     def __init__(self):
         self.clock = pg.time.Clock()
+        self.current_action = ''
+        self.expand_rate = 1
         self.frame_counter = 0
         self.image = None
-        self.num_polygons = 30
+        self.num_shards = 30
         self.screencap = None
-        self.polygons = []
+        self.shards = []
         self.state = ''
 
         self.setup_key_frames()
@@ -27,25 +55,28 @@ class Transition():
             self.frame_counter = 1
 
     def create_shards(self):
-        random_seeds = np.random.rand(self.num_polygons, 2) * 512
+        random_seeds = np.random.rand(self.num_shards, 2) * 512
         vor = Voronoi(random_seeds)
         regions, vertices = voronoi_finite_polygons_2d(vor)
 
-        self.polygons = []
+        self.shards = []
         for reg in regions:
             poly = Polygon(vertices[reg])
+            # Scale down polygons to create "cracks" between them
             scaled_poly = scale(poly, xfact=0.98, yfact=0.98, origin='centroid')
-            self.polygons.append(scaled_poly)
+            # Populate shard objects
+            self.shards.append(Shard(scaled_poly))
 
     def draw(self):
-        self.image.fill(pg.Color(0, 0, 0))
+        self.image.fill(pg.Color(0, 0, 0, 255))
 
-        if not self.polygons:
+        if not self.shards:
             self.image.blit(self.screencap, (0, 0))
 
-        for poly in self.polygons:
-            coords = list(poly.exterior.coords)
-            gfxdraw.filled_polygon(self.image, coords, pg.Color(255, 0, 0))
+        for shard in self.shards:
+            # shard.image = pg.transform.rotate(self.image, shard.rotation)
+            coords = list(shard.poly.exterior.coords)
+            gfxdraw.textured_polygon(self.image, coords, self.screencap, *shard.get_int_coords())
             gfxdraw.polygon(self.image, coords, pg.Color(255, 255, 255))
 
     def end(self):
@@ -53,20 +84,39 @@ class Transition():
         self.frame_counter = 0
         self.state = ''
 
+    def expand(self):
+        print('expand')
+
+        screen_center = pg.Vector2(255, 255)
+        for shard in self.shards:
+            direction_vector = pg.Vector2(shard.poly.centroid.x, shard.poly.centroid.y) - screen_center
+            direction_vector.normalize_ip()
+            velocity_vector = direction_vector * self.expand_rate
+            shard.move(velocity_vector)
+
+            shard.rotate()
+
+        self.slow_expansion()
+
     def load_image(self):
-        self.screencap = pg.image.load('calm_lands.png')
+        self.screencap = pg.image.load('calm_lands.png').convert_alpha()
         self.image = pg.Surface(self.screencap.get_size())
+        # self.image.set_colorkey(pg.Color(255, 0, 255))
 
     def setup_key_frames(self):
-        self.key_frames = ['' for _ in range(100)]
-        self.key_frames[1]  = 'shatter'
-        self.key_frames[20] = 'stop_expansion'
-        self.key_frames[40] = 'sweep'
-        self.key_frames[-1] = 'end'
+        self.key_frames      = ['' for _ in range(180)]
+        self.key_frames[1]   = 'shatter'
+        self.key_frames[2]   = 'expand'
+        self.key_frames[60]  = 'stop_expansion'
+        self.key_frames[120] = 'sweep'
+        self.key_frames[-1]  = 'end'
 
     def shatter(self):
         print('shatter')
         self.create_shards()
+
+    def slow_expansion(self):
+        self.expand_rate = piecewise_floor(v=self.expand_rate, operand=0.9, threshold=0.1)
 
     def stop_expansion(self):
         print('stop_expansion')
@@ -77,7 +127,9 @@ class Transition():
     def update(self):
         if self.frame_counter:
             if self.key_frames[self.frame_counter]:
-                getattr(self, self.key_frames[self.frame_counter])()
+                self.current_action = self.key_frames[self.frame_counter]
+
+            getattr(self, self.current_action)()
 
         self.draw()
 
@@ -85,93 +137,15 @@ class Transition():
             self.frame_counter += 1
 
 
-def voronoi_finite_polygons_2d(vor, radius=None):
-    """
-    Reconstruct infinite voronoi regions in a 2D diagram to finite
-    regions.
-    Parameters
-    ----------
-    vor : Voronoi
-        Input diagram
-    radius : float, optional
-        Distance to 'points at infinity'.
-    Returns
-    -------
-    regions : list of tuples
-        Indices of vertices in each revised Voronoi regions.
-    vertices : list of tuples
-        Coordinates for revised Voronoi vertices. Same as coordinates
-        of input vertices, with 'points at infinity' appended to the
-        end.
-    """
-
-    if vor.points.shape[1] != 2:
-        raise ValueError("Requires 2D input")
-
-    new_regions = []
-    new_vertices = vor.vertices.tolist()
-
-    center = vor.points.mean(axis=0)
-    if radius is None:
-        radius = vor.points.ptp().max() * 2
-        print(radius)
-
-    # Construct a map containing all ridges for a given point
-    all_ridges = {}
-    for (p1, p2), (v1, v2) in zip(vor.ridge_points, vor.ridge_vertices):
-        all_ridges.setdefault(p1, []).append((p2, v1, v2))
-        all_ridges.setdefault(p2, []).append((p1, v1, v2))
-
-    # Reconstruct infinite regions
-    for p1, region in enumerate(vor.point_region):
-        vertices = vor.regions[region]
-
-        if all(v >= 0 for v in vertices):
-            # finite region
-            new_regions.append(vertices)
-            continue
-
-        # reconstruct a non-finite region
-        ridges = all_ridges[p1]
-        new_region = [v for v in vertices if v >= 0]
-
-        for p2, v1, v2 in ridges:
-            if v2 < 0:
-                v1, v2 = v2, v1
-            if v1 >= 0:
-                # finite ridge: already in the region
-                continue
-
-            # Compute the missing endpoint of an infinite ridge
-
-            t = vor.points[p2] - vor.points[p1] # tangent
-            t /= np.linalg.norm(t)
-            n = np.array([-t[1], t[0]])  # normal
-
-            midpoint = vor.points[[p1, p2]].mean(axis=0)
-            direction = np.sign(np.dot(midpoint - center, n)) * n
-            far_point = vor.vertices[v2] + direction * radius
-
-            new_region.append(len(new_vertices))
-            new_vertices.append(far_point.tolist())
-
-        # sort region counterclockwise
-        vs = np.asarray([new_vertices[v] for v in new_region])
-        c = vs.mean(axis=0)
-        angles = np.arctan2(vs[:,1] - c[1], vs[:,0] - c[0])
-        new_region = np.array(new_region)[np.argsort(angles)]
-
-        # finish
-        new_regions.append(new_region.tolist())
-
-    return new_regions, np.asarray(new_vertices)
+def piecewise_floor(v: int|float, operand: float, threshold: float) -> int|float:
+    return 0 if abs(v * operand) < threshold else v * operand
 
 
 def main():
     """Shatter transition steps:
     1. Cracks appear in the image; a white "glare" filter is applied
         a. Individual pieces are 3D
-    2. Cracks expand for several frames and pieces tilt slightly at random
+    2. Cracks expand for several frames and pieces tilt slightly at random angles
         a. Pieces may overlap each other slightly at this point
     3. Pieces are swept off-screen to the left or right; motion blur and random rotations are applied
         a. The motion spreads from near-side to far, w.r.t. the direction in which pieces are swept off
