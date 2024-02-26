@@ -1,144 +1,158 @@
-import os
+import math
+import random
 
 import numpy as np
 import pygame as pg
+import pytweening
 
-from pygame import gfxdraw
 from scipy.spatial import Voronoi
 from shapely.geometry import Polygon
 from shapely.affinity import rotate, scale
 
-from colorized_voronoi import voronoi_finite_polygons_2d  # Source: gist.github.com/pv/8036995
+
+# Colors from here: https://github.com/dracula/dracula-theme
+DARKEST     = pg.Color('#121212')
+CYAN        = pg.Color('#8be9fd')
+DARK        = pg.Color('#282a36')
+GRAY        = pg.Color('#44475a')
+GREEN       = pg.Color('#50fa7b')
+RED         = pg.Color('#ff5555')
+TRANSPARENT = pg.Color('#ff00ff')
+YELLOW      = pg.Color('#f5b631')
 
 
 class Shard():
-    def __init__(self, polygon: Polygon):
-        self.poly = polygon
+    def __init__(self, image: pg.Surface, poly: Polygon, offset: tuple[int]):
+        self.poly = poly
+        self.offset = offset
 
-        self.image_offset = pg.Vector2(0, 0)
-        self.rotation = np.random.rand() - 0.5
+        x_min, y_min, x_max, y_max = self.poly.bounds
+        poly_width = x_max - x_min
+        poly_height = y_max - y_min
 
-    def get_int_coords(self) -> tuple[int]:
-        return int(self.image_offset.x), -int(self.image_offset.y)
+        self.cropped_rect = pg.Rect(x_min - offset[0], y_min - offset[1], poly_width, poly_height)
+        self.cropped_image = image.subsurface(self.cropped_rect)
 
-    def move(self, delta: pg.Vector2):
-        self.image_offset += delta
+        self.masked_poly = None  # pg.Surface
+        self.rotated_rect = self.cropped_rect.copy()
+        self.rotation_angle = 0
+        self.rotation_delta = random.uniform(-1, 1)  # Create a little motion in the pattern of cracks
 
-        new_coords = []
-        for x, y in self.poly.exterior.coords:
-            new_coords.append(pg.Vector2(x, y) + delta)
+        self.topleft = (x_min - offset[0], y_min - offset[1])
 
-        self.poly = Polygon(new_coords)
+        self.create_masked_poly(offset)
 
-    def rotate(self):
-        self.rotation = piecewise_floor(v=self.rotation, operand=0.9, threshold=0.1)
-        self.poly = rotate(self.poly, self.rotation, origin=self.poly.centroid)
+    def centroid_tuple(self) -> tuple[float]:
+        return self.poly.centroid.x, self.poly.centroid.y
 
+    def create_masked_poly(self, offset: tuple[int]):
+        poly_points = [tuple([p[0] - self.topleft[0] - offset[0],
+                             p[1] - self.topleft[1] - offset[1]]) for p in self.poly.exterior.coords]
 
-class Transition():
-    def __init__(self):
-        self.clock = pg.time.Clock()
-        self.current_action = ''
-        self.expand_rate = 1
-        self.frame_counter = 0
-        self.image = None
-        self.num_shards = 30
-        self.screencap = None
-        self.shards = []
-        self.state = ''
+        surface = self.cropped_image.copy()
+        surface.fill(pg.Color('#000000'))
+        pg.draw.polygon(surface, pg.Color('#ffffff'), poly_points)
+        surface.blit(self.cropped_image, (0, 0), special_flags=pg.BLEND_RGBA_MIN)
 
-        self.setup_key_frames()
-        self.load_image()
+        pxarray = pg.PixelArray(surface)
+        pxarray.replace(pg.Color('#000000'), TRANSPARENT)
 
-    def begin(self):
-        if not self.frame_counter:
-            self.frame_counter = 1
+        self.masked_poly = surface
+        self.masked_poly = pxarray.make_surface()
+        self.masked_poly.set_colorkey(TRANSPARENT)
 
-    def create_shards(self):
-        random_seeds = np.random.rand(self.num_shards, 2) * 512
-        vor = Voronoi(random_seeds)
-        regions, vertices = voronoi_finite_polygons_2d(vor)
+    def rotate_image(self, destination: tuple[int]) -> tuple[pg.Surface, pg.Rect]:
+        destination = pg.Vector2(destination)
 
-        self.shards = []
-        for reg in regions:
-            poly = Polygon(vertices[reg])
-            # Scale down polygons to create "cracks" between them
-            scaled_poly = scale(poly, xfact=0.98, yfact=0.98, origin='centroid')
-            # Populate shard objects
-            self.shards.append(Shard(scaled_poly))
+        rotated = pg.transform.rotate(self.masked_poly, self.rotation_angle * -1)
+        rect = rotated.get_rect(center=(rotated.get_width() // 2, rotated.get_height() // 2))
+        destination_delta = pg.Vector2(destination.x - rect.center[0], destination.y - rect.center[1])
+        self.rotated_rect.x += destination_delta.x
+        self.rotated_rect.y += destination_delta.y
 
-    def draw(self):
-        self.image.fill(pg.Color(0, 0, 0, 255))
-
-        if not self.shards:
-            self.image.blit(self.screencap, (0, 0))
-
-        for shard in self.shards:
-            # shard.image = pg.transform.rotate(self.image, shard.rotation)
-            coords = list(shard.poly.exterior.coords)
-            gfxdraw.textured_polygon(self.image, coords, self.screencap, *shard.get_int_coords())
-            gfxdraw.polygon(self.image, coords, pg.Color(255, 255, 255))
-
-    def end(self):
-        print('end')
-        self.frame_counter = 0
-        self.state = ''
-
-    def expand(self):
-        print('expand')
-
-        screen_center = pg.Vector2(255, 255)
-        for shard in self.shards:
-            direction_vector = pg.Vector2(shard.poly.centroid.x, shard.poly.centroid.y) - screen_center
-            direction_vector.normalize_ip()
-            velocity_vector = direction_vector * self.expand_rate
-            shard.move(velocity_vector)
-
-            shard.rotate()
-
-        self.slow_expansion()
-
-    def load_image(self):
-        self.screencap = pg.image.load('calm_lands.png').convert_alpha()
-        self.image = pg.Surface(self.screencap.get_size())
-        # self.image.set_colorkey(pg.Color(255, 0, 255))
-
-    def setup_key_frames(self):
-        self.key_frames      = ['' for _ in range(180)]
-        self.key_frames[1]   = 'shatter'
-        self.key_frames[2]   = 'expand'
-        self.key_frames[60]  = 'stop_expansion'
-        self.key_frames[120] = 'sweep'
-        self.key_frames[-1]  = 'end'
-
-    def shatter(self):
-        print('shatter')
-        self.create_shards()
-
-    def slow_expansion(self):
-        self.expand_rate = piecewise_floor(v=self.expand_rate, operand=0.9, threshold=0.1)
-
-    def stop_expansion(self):
-        print('stop_expansion')
-
-    def sweep(self):
-        print('sweep')
+        self.rotated_image = rotated
+        self.rotated_rect = rect
 
     def update(self):
-        if self.frame_counter:
-            if self.key_frames[self.frame_counter]:
-                self.current_action = self.key_frames[self.frame_counter]
+        self.rotation_angle += self.rotation_delta
+        self.rotation_delta = self.rotation_delta * .9 if self.rotation_delta > .05 else 0
 
-            getattr(self, self.current_action)()
+        self.rotate_image(destination=self.centroid_tuple())
 
-        self.draw()
-
-        if self.frame_counter:
-            self.frame_counter += 1
+        self.poly = rotate(self.poly, self.rotation_delta, origin=self.poly.centroid)
+        x_min, y_min, x_max, y_max = self.poly.bounds
+        self.topleft = (x_min, y_min)
 
 
-def piecewise_floor(v: int|float, operand: float, threshold: float) -> int|float:
-    return 0 if abs(v * operand) < threshold else v * operand
+def create_vertices(bounding_box_offset: pg.Vector2, bounding_box_size: pg.Vector2,
+                    num_vertices:int = 100) -> list[pg.Vector2]:
+    bounding_box_offset = pg.Vector2(bounding_box_offset)
+    bounding_box_size = pg.Vector2(bounding_box_size)
+
+    random_vertices = [pg.Vector2(p) for p in list(zip(
+        np.random.uniform(bounding_box_offset.x, bounding_box_offset.x + bounding_box_size.x, num_vertices),
+        np.random.uniform(bounding_box_offset.y, bounding_box_offset.y + bounding_box_size.y, num_vertices)))]
+
+    # For each vert, reflect it across the vertical and horizontal axes it's closest to.
+    # Adding these reflected verts to our initial set ensures the diagram includes the edges of our bounding box.
+    reflected = []
+    for pt in random_vertices:
+        boundary_line_right = bounding_box_offset.x + bounding_box_size.x
+        delta = boundary_line_right - pt.x
+        if delta < bounding_box_offset.x:
+            reflected.append(pg.Vector2(boundary_line_right + delta, pt.y))
+
+        boundary_line_left = bounding_box_offset.x
+        delta = boundary_line_left - pt.x
+        if delta < bounding_box_offset.x:
+            reflected.append(pg.Vector2(boundary_line_left + delta, pt.y))
+
+        boundary_line_top = bounding_box_offset.y
+        delta = pt.y - boundary_line_top
+        if delta < bounding_box_offset.y:
+            reflected.append(pg.Vector2(pt.x, boundary_line_top - delta))
+
+        boundary_line_bottom = bounding_box_offset.y + bounding_box_size.y
+        delta = boundary_line_bottom - pt.y
+        if delta < bounding_box_offset.y:
+            reflected.append(pg.Vector2(pt.x, boundary_line_bottom + delta))
+
+    return random_vertices + reflected
+
+
+def create_voronoi_shards(vertices: list[pg.Vector2], bounding_box_offset: pg.Vector2,
+                          bounding_box_size: pg.Vector2) -> list[Shard]:
+    vor = Voronoi(np.array([[v.x, v.y] for v in vertices]))
+
+    polygons = []
+    for region in vor.regions:
+        polygons.append(Polygon(vor.vertices[region]))
+
+    # Drop polygons which have any points outside the bounding box
+    filtered_polys = []
+    for poly in polygons:
+        drop = False
+
+        if not len(poly.exterior.coords):
+            drop = True
+
+        for pt in poly.exterior.coords:
+            if pt[0] < bounding_box_offset.x - 1 or pt[0] > bounding_box_offset.x + bounding_box_size.x + 1:
+                drop = True
+            if pt[1] < bounding_box_offset.y - 1 or pt[1] > bounding_box_offset.y + bounding_box_size.y + 1:
+                drop = True
+        if not drop:
+            filtered_polys.append(poly)
+
+    polygons = None
+
+    # Scale down each poly & create Shard objects
+    shards = []
+    image = pg.image.load('zanarkand.png')
+    for poly in filtered_polys:
+        shards.append(Shard(image, scale(poly, 0.9, 0.9), bounding_box_offset))
+
+    return shards
 
 
 def main():
@@ -154,27 +168,44 @@ def main():
     """
 
     pg.init()
-    pg.display.set_caption('FFX Battle Intro')
-    screen = pg.display.set_mode((512, 512))
+    pg.display.set_caption('FFX Shatter Transition')
+    screen_dims = (768, 768)
+    bounding_box_offset = pg.Vector2(128, 128)
+    bounding_box_size = pg.Vector2(512, 512)
+    screen = pg.display.set_mode(screen_dims)
+    clock = pg.time.Clock()
 
-    transition = Transition()
+    vertices = create_vertices(bounding_box_offset, bounding_box_size)
+    shards = create_voronoi_shards(vertices, bounding_box_offset, bounding_box_size)
+    glare_alpha_max = 130
+    glare_alpha = glare_alpha_max
+    glare_counter = 1.0
 
     running = True
 
     while running:
-        transition.clock.tick(30)
+        clock.tick(30)
 
         for event in pg.event.get():
             if event.type == pg.QUIT:
                 running = False
-            elif event.type == pg.MOUSEBUTTONDOWN:
-                if event.button == 1:
-                    transition.begin()
 
-        transition.update()
+        screen.fill(DARKEST)
+        surface = pg.Surface(screen_dims, pg.SRCALPHA)
 
-        screen.fill(pg.Color(0, 0, 0))
-        screen.blit(transition.image, (0, 0))
+        for shard in shards:
+            shard.update()
+            screen.blit(shard.rotated_image, shard.topleft)
+
+            if glare_alpha:
+                pg.draw.polygon(surface, pg.Color(255, 255, 255, glare_alpha), shard.poly.exterior.coords)
+
+        # Should last 0.6 seconds (18 frames)
+        if glare_alpha:
+            screen.blit(surface, (0, 0))
+            glare_alpha = max(math.floor(pytweening.easeInOutQuad(glare_counter) * glare_alpha_max), 0)
+            glare_counter -= 1 / 18
+
         pg.display.flip()
 
 
