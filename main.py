@@ -32,7 +32,7 @@ class Shard():
 
         self.cropped_rect = pg.Rect(x_min - self.offset[0], y_min - self.offset[1], poly_width, poly_height)
         self.cropped_image = image.subsurface(self.cropped_rect)
-        self.friction = 0.93
+        self.friction = 0.92
         self.in_motion = False
         self.masked_poly = None  # pg.Surface
         self.motion_frame = 0
@@ -110,6 +110,11 @@ class Shard():
         self.set_topleft()
 
 
+def create_shards(bounding_box_offset: pg.Vector2, bounding_box_size: pg.Vector2, image: pg.Surface) -> list[Shard]:
+    vertices = create_vertices(bounding_box_offset, bounding_box_size)
+    return create_voronoi_shards(vertices, bounding_box_offset, bounding_box_size, image)
+
+
 def create_vertices(bounding_box_offset: pg.Vector2, bounding_box_size: pg.Vector2,
                     num_vertices:int = 100) -> list[pg.Vector2]:
     bounding_box_offset = pg.Vector2(bounding_box_offset)
@@ -181,15 +186,15 @@ def create_voronoi_shards(vertices: list[pg.Vector2], bounding_box_offset: pg.Ve
 
 
 def main():
-    """Shatter transition steps:
-    1. Cracks appear in the image; a white "glare" filter is applied and fades over ~1s
-        a. Individual pieces are 3D
-    2. Cracks expand for several frames and pieces tilt slightly at random angles
-        a. Pieces may overlap each other slightly at this point
-    3. Pieces are swept off-screen to the left or right; motion blur and random rotations are applied
-        a. The motion spreads from near-side to far, w.r.t. the direction in which pieces are swept off
-
+    """
+    Shatter transition
     Reference: https://www.youtube.com/watch?v=HKhcqwBrt1Y
+
+    1. Cracks appear in the image; a white "glare" filter is applied and fades; takes about 0.6 seconds
+    2. Pieces tilt slightly at random angles
+        a. They may overlap each other slightly at this point
+    3. Pieces are swept off-screen to the left or right; motion blur and random rotations are applied
+        a. Motion "sweeps" across from near-side to far w.r.t. the direction in which pieces are swept off
     """
 
     pg.init()
@@ -201,17 +206,18 @@ def main():
     clock = pg.time.Clock()
 
     image = pg.image.load('zanarkand.png')
-    vertices = create_vertices(bounding_box_offset, bounding_box_size)
-    shards = create_voronoi_shards(vertices, bounding_box_offset, bounding_box_size, image)
+    shards = create_shards(bounding_box_offset, bounding_box_size, image)
     glare_alpha_max = 130
     glare_alpha = glare_alpha_max
     glare_counter = 1.0
     sweep_x = bounding_box_offset[0]
     motion_surface = pg.Surface(screen_dims, pg.SRCALPHA)
 
+    cooldown_timer = 0
     paused = True
-    running = True
     motion_blur = False
+    reset_ready = False
+    running = True
 
     while running:
         clock.tick(30)
@@ -220,7 +226,18 @@ def main():
             if event.type == pg.QUIT:
                 running = False
             elif event.type == pg.MOUSEBUTTONDOWN:
-                paused = False
+                if reset_ready:
+                    shards = create_shards(bounding_box_offset, bounding_box_size, image)
+                    glare_alpha = glare_alpha_max
+                    glare_counter = 1.0
+                    sweep_x = bounding_box_offset[0]
+
+                    cooldown_timer = 0
+                    paused = True
+                    motion_blur = False
+                    reset_ready = False
+                else:
+                    paused = False
 
         if motion_blur:
             screen.blit(motion_surface, (0, 0))
@@ -240,7 +257,7 @@ def main():
                     pg.draw.polygon(glare_surface, pg.Color(255, 255, 255, glare_alpha),
                                     shard.poly.exterior.coords)
 
-            # Should last 0.6 seconds (18 frames)
+            # Glare should fade in 0.6 seconds (18 frames)
             if glare_alpha:
                 screen.blit(glare_surface, (0, 0))
                 glare_alpha = max(math.floor(pytweening.easeInOutQuad(glare_counter) * glare_alpha_max), 0)
@@ -253,11 +270,18 @@ def main():
 
                 if motion_blur:
                     motion_surface.blit(screen, (0, 0))
-                    alpha = max(int(-0.44 * sweep_x + 310.808), 64)
+                    alpha = max(int(-0.3 * sweep_x + 310), 64)
                     motion_surface.fill(pg.Color(18, 18, 18, alpha))
 
                 motion_blur = sweep_x > 330  # Delay before starting blur
 
+        if not reset_ready:
+            if cooldown_timer:
+                cooldown_timer -= 1
+                if not cooldown_timer:
+                    reset_ready = True
+            elif len([s for s in shards if s.motion_frame == len(s.tween_coords) - 1]) == len(shards):
+                cooldown_timer = 30  # 1s delay after animation is complete
 
         pg.display.flip()
 
