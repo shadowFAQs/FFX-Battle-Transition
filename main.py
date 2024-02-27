@@ -7,10 +7,10 @@ import pytweening
 
 from scipy.spatial import Voronoi
 from shapely.geometry import Polygon
-from shapely.affinity import rotate, scale
+from shapely.affinity import rotate, scale, translate
 
 
-# Colors from here: https://github.com/dracula/dracula-theme
+# Colors from https://github.com/dracula/dracula-theme
 DARKEST     = pg.Color('#121212')
 CYAN        = pg.Color('#8be9fd')
 DARK        = pg.Color('#282a36')
@@ -30,24 +30,31 @@ class Shard():
         poly_width = x_max - x_min
         poly_height = y_max - y_min
 
-        self.cropped_rect = pg.Rect(x_min - offset[0], y_min - offset[1], poly_width, poly_height)
+        self.cropped_rect = pg.Rect(x_min - self.offset[0], y_min - self.offset[1], poly_width, poly_height)
         self.cropped_image = image.subsurface(self.cropped_rect)
-
+        self.friction = 0.93
+        self.in_motion = False
         self.masked_poly = None  # pg.Surface
+        self.motion_frame = 0
         self.rotated_rect = self.cropped_rect.copy()
         self.rotation_angle = 0
-        self.rotation_delta = random.uniform(-1, 1)  # Create a little motion in the pattern of cracks
+        self.topleft = (x_min - self.offset[0], y_min - self.offset[1])
+        self.tween_coords = []
 
-        self.topleft = (x_min - offset[0], y_min - offset[1])
+        self.create_masked_poly()
+        self.set_rotation(-1, 1)  # Create a little initial motion in the pattern of cracks
 
-        self.create_masked_poly(offset)
+    def begin_sweep(self):
+        self.in_motion = True
+        self.friction = 1
+        self.rotation_delta = random.choice([-5, -4, -3, 3, 4, 5])
 
     def centroid_tuple(self) -> tuple[float]:
         return self.poly.centroid.x, self.poly.centroid.y
 
-    def create_masked_poly(self, offset: tuple[int]):
-        poly_points = [tuple([p[0] - self.topleft[0] - offset[0],
-                             p[1] - self.topleft[1] - offset[1]]) for p in self.poly.exterior.coords]
+    def create_masked_poly(self):
+        poly_points = [tuple([p[0] - self.topleft[0] - self.offset[0],
+                             p[1] - self.topleft[1] - self.offset[1]]) for p in self.poly.exterior.coords]
 
         surface = self.cropped_image.copy()
         surface.fill(pg.Color('#000000'))
@@ -73,15 +80,34 @@ class Shard():
         self.rotated_image = rotated
         self.rotated_rect = rect
 
-    def update(self):
-        self.rotation_angle += self.rotation_delta
-        self.rotation_delta = self.rotation_delta * .9 if self.rotation_delta > .05 else 0
+    def set_rotation(self, range_min: int, range_max: int):
+        self.rotation_delta = random.uniform(range_min, range_max)
 
-        self.rotate_image(destination=self.centroid_tuple())
-
-        self.poly = rotate(self.poly, self.rotation_delta, origin=self.poly.centroid)
+    def set_topleft(self):
         x_min, y_min, x_max, y_max = self.poly.bounds
         self.topleft = (x_min, y_min)
+
+    def translate(self):
+        if not self.tween_coords:
+            start_x = self.topleft[0]
+            end_x = -start_x - 200
+            self.tween_coords = [start_x + pytweening.easeInOutQuint(f / 60) * end_x for f in range(60)]
+
+        delta = self.tween_coords[self.motion_frame] - self.topleft[0]
+        self.poly = translate(self.poly, delta)
+
+    def update(self):
+        self.rotation_angle += self.rotation_delta
+        self.rotation_delta = self.rotation_delta * self.friction if abs(self.rotation_delta) > .05 else 0
+
+        self.rotate_image(destination=self.centroid_tuple())
+        self.poly = rotate(self.poly, self.rotation_delta, origin=self.poly.centroid)
+
+        if self.in_motion:
+            self.translate()
+            self.motion_frame = min(self.motion_frame + 1, len(self.tween_coords) - 1)
+
+        self.set_topleft()
 
 
 def create_vertices(bounding_box_offset: pg.Vector2, bounding_box_size: pg.Vector2,
@@ -157,7 +183,7 @@ def create_voronoi_shards(vertices: list[pg.Vector2], bounding_box_offset: pg.Ve
 
 def main():
     """Shatter transition steps:
-    1. Cracks appear in the image; a white "glare" filter is applied
+    1. Cracks appear in the image; a white "glare" filter is applied and fades over ~1s
         a. Individual pieces are 3D
     2. Cracks expand for several frames and pieces tilt slightly at random angles
         a. Pieces may overlap each other slightly at this point
@@ -180,6 +206,7 @@ def main():
     glare_alpha_max = 130
     glare_alpha = glare_alpha_max
     glare_counter = 1.0
+    sweep_x = bounding_box_offset[0]
 
     running = True
 
@@ -205,6 +232,11 @@ def main():
             screen.blit(surface, (0, 0))
             glare_alpha = max(math.floor(pytweening.easeInOutQuad(glare_counter) * glare_alpha_max), 0)
             glare_counter -= 1 / 18
+        else:
+            if sweep_x < screen_dims[0]:
+                sweep_x += random.randint(8, 12)
+            for shard in [s for s in shards if s.topleft[0] < sweep_x and not s.in_motion]:
+                shard.begin_sweep()
 
         pg.display.flip()
 
