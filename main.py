@@ -50,8 +50,8 @@ class Shard():
         self.friction = 1
         self.rotation_delta = random.choice([-5, -4, -3, 3, 4, 5])
 
-    def centroid_tuple(self) -> tuple[float]:
-        return self.poly.centroid.x, self.poly.centroid.y
+    def centroid_vector(self) -> pg.Vector2:
+        return pg.Vector2(self.poly.centroid.x, self.poly.centroid.y)
 
     def create_masked_poly(self):
         poly_points = [tuple([p[0] - self.topleft[0], p[1] - self.topleft[1]]) for p in self.poly.exterior.coords]
@@ -68,24 +68,15 @@ class Shard():
         self.masked_poly = pxarray.make_surface()
         self.masked_poly.set_colorkey(TRANSPARENT)
 
-    def rotate_image(self, destination: tuple[int]) -> tuple[pg.Surface, pg.Rect]:
-        destination = pg.Vector2(destination)
+    def rotate_image(self) -> tuple[pg.Surface, pg.Rect]:
+        self.rotated_image = pg.transform.rotate(self.masked_poly, self.rotation_angle * -1)
+        self.rect = self.rotated_image.get_rect()
+        centroid_delta = self.centroid_vector() - self.rect.center
 
-        rotated = pg.transform.rotate(self.masked_poly, self.rotation_angle * -1)
-        rect = rotated.get_rect(center=(rotated.get_width() // 2, rotated.get_height() // 2))
-        destination_delta = pg.Vector2(destination.x - rect.center[0], destination.y - rect.center[1])
-        self.rotated_rect.x += destination_delta.x
-        self.rotated_rect.y += destination_delta.y
-
-        self.rotated_image = rotated
-        self.rotated_rect = rect
+        self.topleft = tuple(self.rect.topleft + centroid_delta)
 
     def set_rotation(self, range_min: int, range_max: int):
         self.rotation_delta = random.uniform(range_min, range_max)
-
-    def set_topleft(self):
-        x_min, y_min, x_max, y_max = self.poly.bounds
-        self.topleft = (x_min, y_min)
 
     def translate(self):
         if not self.tween_coords:
@@ -100,7 +91,7 @@ class Shard():
         self.rotation_angle += self.rotation_delta
         self.rotation_delta = self.rotation_delta * self.friction if abs(self.rotation_delta) > .05 else 0
 
-        self.rotate_image(destination=self.centroid_tuple())
+        self.rotate_image()
         self.poly = rotate(self.poly, self.rotation_delta, origin=self.poly.centroid)
 
         if self.in_motion:
@@ -109,8 +100,6 @@ class Shard():
 
             if self.motion_frame == len(self.tween_coords) - 1:
                 self.display = False
-
-        self.set_topleft()
 
 
 def create_shards(screen_dims: tuple[int], image: pg.Surface) -> list[Shard]:
@@ -254,7 +243,7 @@ def main():
             else:
                 if sweep_x < screen_dims[0]:
                     sweep_x += random.randint(8, 12)
-                for shard in [s for s in shards if s.centroid_tuple()[0] < sweep_x and not s.in_motion]:
+                for shard in [s for s in shards if s.centroid_vector().x < sweep_x and not s.in_motion]:
                     shard.begin_sweep()
 
                 if motion_blur:
