@@ -16,6 +16,7 @@ CYAN        = pg.Color('#8be9fd')
 DARK        = pg.Color('#282a36')
 GRAY        = pg.Color('#44475a')
 GREEN       = pg.Color('#50fa7b')
+ORANGE      = pg.Color('#ffb86c')
 RED         = pg.Color('#ff5555')
 TRANSPARENT = pg.Color('#ff00ff')
 YELLOW      = pg.Color('#f5b631')
@@ -64,7 +65,6 @@ class Shard():
         pxarray = pg.PixelArray(surface)
         pxarray.replace(pg.Color(0, 0, 0), TRANSPARENT)
 
-        self.masked_poly = surface
         self.masked_poly = pxarray.make_surface()
         self.masked_poly.set_colorkey(TRANSPARENT)
 
@@ -101,6 +101,19 @@ class Shard():
             if self.motion_frame == len(self.tween_coords) - 1:
                 self.display = False
 
+
+def add_glare(surface: pg.Surface, alpha: float) -> pg.Surface:
+    white = pg.Color(255, 255, 255)
+    copy = surface.copy()
+    pxarray = pg.PixelArray(copy)
+
+    for i in range(len(pxarray)):
+        for j in range(len(pxarray[i])):
+            if pxarray[i][j] != copy.map_rgb(DARKEST):
+                color = copy.unmap_rgb(pxarray[i][j])
+                pxarray[i][j] = copy.map_rgb(color.lerp(white, alpha))
+
+    return pxarray.make_surface()
 
 def create_shards(screen_dims: tuple[int], image: pg.Surface) -> list[Shard]:
     vertices = create_vertices(screen_dims)
@@ -177,13 +190,13 @@ def main():
     pg.display.set_caption('FFX Shatter Transition')
     screen_dims = (512, 512)
     screen = pg.display.set_mode(screen_dims)
+    screen_copy = screen.copy()
     clock = pg.time.Clock()
     target_framerate = 30
 
     image = pg.image.load('zanarkand.png')
     shards = create_shards(screen_dims, image)
-    glare_alpha_max = 130
-    glare_alpha = glare_alpha_max
+    glare_alpha = 1
     glare_counter = 1.0
     sweep_x = 16
     motion_surface = pg.Surface(screen_dims, pg.SRCALPHA)
@@ -203,7 +216,7 @@ def main():
             elif event.type == pg.MOUSEBUTTONDOWN:
                 if reset_ready:
                     shards = create_shards(screen_dims, image)
-                    glare_alpha = glare_alpha_max
+                    glare_alpha = 1
                     glare_counter = 1.0
                     sweep_x = 16
 
@@ -222,24 +235,20 @@ def main():
         if paused:
             screen.blit(image, (0, 0))
         else:
-            if glare_alpha:
-                glare_surface = pg.Surface(screen_dims, pg.SRCALPHA)
-
             for shard in shards:
                 shard.update()
 
                 if shard.display:
                     screen.blit(shard.rotated_image, shard.topleft)
 
-                if glare_alpha:
-                    pg.draw.polygon(glare_surface, pg.Color(255, 255, 255, glare_alpha),
-                                    shard.poly.exterior.coords)
+            screen_copy = screen.copy()
 
             # Glare should fade in 0.6 seconds (18 frames)
-            if glare_alpha:
-                screen.blit(glare_surface, (0, 0))
-                glare_alpha = max(math.floor(pytweening.easeInOutQuad(glare_counter) * glare_alpha_max), 0)
-                glare_counter -= 1 / 18
+            if glare_counter > 0:
+                screen_copy = add_glare(screen_copy, glare_alpha)
+                screen.blit(screen_copy, (0, 0))
+                glare_alpha = pytweening.easeInOutQuad(glare_counter)
+                glare_counter = max(glare_counter - 1 / 18, 0)
             else:
                 if sweep_x < screen_dims[0]:
                     sweep_x += random.randint(8, 12)
