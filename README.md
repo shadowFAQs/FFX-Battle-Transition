@@ -2,6 +2,11 @@
 
 ![](demo_zanarkand.gif)
 
-Reference: [https://www.youtube.com/watch?v=HKhcqwBrt1Y](https://www.youtube.com/watch?v=HKhcqwBrt1Y)
+Uses [pygame](https://github.com/pygame/pygame), [numpy](https://numpy.org/), [pytweening](https://github.com/asweigart/pytweening), [scipy](https://scipy.org/) and [shapely](https://pypi.org/project/shapely/)
 
-Uses pygame, numpy, pytweening, scipy and shapely
+### Try it out:
+* Specify an image filename: `python main.py midboss.png`
+* Click anywhere on the pygame window
+
+### A note:
+The real FFX shattered glass pattern [is the same every time](https://www.youtube.com/watch?v=HKhcqwBrt1Y), but this one is created on the fly with Voronoi diagrams.
